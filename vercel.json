@@ -1,0 +1,19 @@
+{
+    "version": 2,
+    "builds": [
+        {
+            "src": "api/index.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/(.*)",
+            "dest": "api/index.py"
+        }
+    ],
+    "env": {
+        "PYTHONPATH": ".",
+        "FLASK_SECRET_KEY": "7e4b5c113bddc513d15fba320186b1292d0352658d5b5d061196e9506ce8a1a3"
+    }
+} 
