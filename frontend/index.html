@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Calendar Slot Finder</title>
+  <style>
+    :root {
+      --primary: #B939F8;          /* Stravito Purple */
+      --primary-dark: #9B14D9;     /* Darker Purple */
+      --accent: #FF5FA7;           /* Stravito Pink */
+      --accent-dark: #FF338C;      /* Darker Pink */
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-700: #374151;
+      --gray-800: #1f2937;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      line-height: 1.5;
+      color: var(--gray-800);
+      padding: 2rem;
+      max-width: 48rem;
+      margin: auto;
+      background: var(--gray-50);
+    }
+
+    .container {
+      background: white;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0 0 2rem 0;
+      color: var(--gray-800);
+      background: linear-gradient(45deg, var(--primary), var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .step {
+      margin-bottom: 2rem;
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .step-number {
+      background: linear-gradient(45deg, var(--primary), var(--accent));
+      color: white;
+      width: 24px;
+      height: 24px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.875rem;
+      margin-right: 0.75rem;
+    }
+
+    .step-title {
+      font-weight: 500;
+      color: var(--gray-700);
+    }
+
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    button:hover {
+      background: var(--primary-dark);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(185, 57, 248, 0.2);
+    }
+
+    button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    #findBtn {
+      background: var(--accent);
+    }
+
+    #findBtn:hover {
+      background: var(--accent-dark);
+      box-shadow: 0 2px 4px rgba(255, 95, 167, 0.2);
+    }
+
+    textarea {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid var(--gray-200);
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 0.875rem;
+      line-height: 1.5;
+      resize: vertical;
+      transition: all 0.2s ease;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(185, 57, 248, 0.1);
+    }
+
+    #out {
+      font-family: ui-monospace, monospace;
+      background: var(--gray-100);
+      padding: 1rem;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      margin-top: 1rem;
+      font-size: 0.875rem;
+      line-height: 1.7;
+      border-left: 3px solid var(--accent);
+    }
+
+    .examples {
+      margin-top: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--gray-700);
+    }
+
+    .example {
+      display: inline-block;
+      background: var(--gray-100);
+      padding: 0.25rem 0.75rem;
+      border-radius: 1rem;
+      margin: 0.25rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      border: 1px solid transparent;
+    }
+
+    .example:hover {
+      background: white;
+      border-color: var(--primary);
+      color: var(--primary);
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Calendar Slot Finder</h1>
+    
+    <div class="step">
+      <div class="step-header">
+        <div class="step-number">1</div>
+        <div class="step-title">Authorize with Google Calendar</div>
+      </div>
+      <button id="loginBtn">Authorize Access</button>
+    </div>
+
+    <div class="step">
+      <div class="step-header">
+        <div class="step-number">2</div>
+        <div class="step-title">Describe when you'd like to meet</div>
+      </div>
+      <textarea id="prompt" rows="3" placeholder="Example: Find me three 30-minute slots next week between Tuesday and Thursday"></textarea>
+      <div class="examples">
+        <div class="example">next Monday after 2 PM</div>
+        <div class="example">45-minute slot tomorrow morning</div>
+        <div class="example">3 slots next week</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-header">
+        <div class="step-number">3</div>
+        <div class="step-title">Find available slots</div>
+      </div>
+      <button id="findBtn">Find Slots</button>
+      <pre id="out"></pre>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
