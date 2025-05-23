@@ -72,10 +72,19 @@ def free_slots():
         return jsonify({"auth": False}), 401
 
     params = extract_parameters(request.json.get("prompt", ""))
-    print("🔎 NLP extracted:", params)
+    print("\n🔎 NLP extracted parameters:")
+    print(f"- Duration: {params['duration']} minutes")
+    print(f"- Count: {params['count']} slots")
+    print(f"- Start: {params['start']}")
+    print(f"- End: {params['end']}")
+    print(f"- Earliest: {params['earliest']}:00")
+    print(f"- Latest: {params['latest']}:00")
+
     duration = params["duration"]
     start, end = params["start"], params["end"]
-    need_n = params.get("count", 1)
+    need_n = params["count"]  # Get count directly from params
+
+    print(f"\n🎯 Searching for {need_n} slots of {duration} minutes each")
 
     service = get_service(creds)
     busy = list_events(service, THOR_CAL_ID, start, end)
@@ -84,33 +93,48 @@ def free_slots():
         duration, params["earliest"], params["latest"]
     )
     
+    print(f"\n📊 Found {len(slots)} initial free windows")
+    
     # Split each free window into chunks of the requested duration
     chunks = []
     for w_start, w_end in slots:
         # Convert to local time for better readability
         w_start_local = _to_local(w_start)
         w_end_local = _to_local(w_end)
-        print(f"\nSplitting window: {w_start_local.strftime('%H:%M')} → {w_end_local.strftime('%H:%M')}")
+        print(f"\nSplitting window: {w_start_local.strftime('%Y-%m-%d %H:%M')} → {w_end_local.strftime('%H:%M')}")
         # Take all possible chunks from this window
-        for chunk_start, chunk_end in split_window_into_chunks(w_start_local, w_end_local, duration):
-            print(f"  Found chunk: {chunk_start.strftime('%H:%M')} → {chunk_end.strftime('%H:%M')}")
-            chunks.append((chunk_start, chunk_end))
+        window_chunks = list(split_window_into_chunks(w_start_local, w_end_local, duration))
+        print(f"Found {len(window_chunks)} chunks in this window")
+        chunks.extend(window_chunks)
 
     # Sort chunks by start time
     chunks.sort(key=lambda x: x[0])
-    print(f"\nTotal chunks found: {len(chunks)}")
+    print(f"\n📈 Total chunks available: {len(chunks)}")
 
     # Take the requested number of chunks, spread across different days if possible
     chosen = []
     seen_dates = set()
+    print(f"\n🎯 Attempting to select {need_n} slots from {len(chunks)} available chunks")
+    
+    # Try to get slots from different days first
     for chunk in chunks:
         chunk_date = chunk[0].date()
-        # If we haven't seen this date before, or we haven't found enough slots yet
-        if chunk_date not in seen_dates or len(chosen) < need_n:
+        if len(chosen) < need_n and chunk_date not in seen_dates:
             chosen.append(chunk)
             seen_dates.add(chunk_date)
+            print(f"Selected slot {len(chosen)}/{need_n} (different day): {chunk[0].strftime('%Y-%m-%d %H:%M')} → {chunk[1].strftime('%H:%M')}")
+    
+    # If we still need more slots, take any available ones
+    if len(chosen) < need_n:
+        for chunk in chunks:
+            if chunk not in chosen and len(chosen) < need_n:
+                chosen.append(chunk)
+                print(f"Selected slot {len(chosen)}/{need_n} (any day): {chunk[0].strftime('%Y-%m-%d %H:%M')} → {chunk[1].strftime('%H:%M')}")
             if len(chosen) >= need_n:
+                print(f"✅ Found all {need_n} requested slots")
                 break
+
+    print(f"\n✨ Selected {len(chosen)} slots out of {len(chunks)} available chunks")
 
     # Format response as clean text
     if not chosen:
@@ -120,11 +144,16 @@ def free_slots():
         for i, (s, e) in enumerate(chosen, 1):
             s_utc = _to_utc(s)
             e_utc = _to_utc(e)
-            duration_mins = int((e - s).total_seconds() / 60)
-            slot_text = f"\nSlot {i}:\n" + format_time_slot(s, e, s_utc, e_utc, duration_mins)
+            # Simple, clean format that's easy to parse
+            slot_text = (
+                f"Slot {i}\n"
+                f"{s.strftime('%Y-%m-%d')}\n"
+                f"{s.strftime('%A')} | {s.strftime('%H:%M')}-{e.strftime('%H:%M')} CET | "
+                f"{s_utc.strftime('%H:%M')}-{e_utc.strftime('%H:%M')} UTC"
+            )
             formatted_slots.append(slot_text)
         
-        response_text = "Available slots:" + "\n".join(formatted_slots)
+        response_text = "\n\n".join(formatted_slots)
     
     # Return plain text response
     response = make_response(response_text)

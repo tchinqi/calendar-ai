@@ -13,11 +13,31 @@ _NUM_WORDS = {
 }
 
 def _extract_count(prompt: str) -> int:
+    """Extract the number of slots requested from the prompt.
+    
+    Examples:
+    - "3 slots" -> 3
+    - "three slots" -> 3
+    - "Find me 2 slots" -> 2
+    """
+    print(f"\n🔢 Extracting slot count from: '{prompt}'")
+    
+    # First try numeric digits
     m = re.search(r"\b(\d+)\s+slots?\b", prompt, re.I)
     if m:
-        return max(1, int(m.group(1)))
+        count = max(1, int(m.group(1)))
+        print(f"Found numeric slot count: {count}")
+        return count
+        
+    # Then try word numbers
     m = re.search(r"\b(" + "|".join(_NUM_WORDS) + r")\s+slots?\b", prompt, re.I)
-    return _NUM_WORDS.get(m.group(1).lower(), 1) if m else 1
+    if m:
+        count = _NUM_WORDS.get(m.group(1).lower(), 1)
+        print(f"Found word slot count: {count}")
+        return count
+        
+    print("No slot count found, defaulting to 1")
+    return 1
 
 # ── hour helper ────────────────────────────────────
 def _to_24h(hour: int, meridiem: str | None) -> int:
@@ -72,26 +92,62 @@ def extract_parameters(prompt: str) -> dict:
     
     out = {
         "start":    now,
-        "end":      now + timedelta(days=7),
+        "end":      now + timedelta(days=30),  # Look ahead 30 days by default instead of 7
         "duration": 20,  # Default to 20 minutes
         "earliest": 9,    # Default work day start
         "latest":   17,   # Default work day end
-        "count":    1,
+        "count":    _extract_count(prompt),  # Extract count immediately and store it
     }
 
+    print(f"\n🔢 Initial parameters:")
+    print(f"- Requested slots: {out['count']}")
+    print(f"- Default duration: {out['duration']} minutes")
+    print(f"- Work hours: {out['earliest']}:00 - {out['latest']}:00")
+
     # Duration - look for this first to set default if not found
-    m = re.search(r"(\d+)\s*[-\s]?(minutes?|mins?|hours?|h)\b", prompt, re.I)
-    if m:
-        val = int(m.group(1))
-        out["duration"] = val * 60 if m.group(2).lower().startswith("h") else val
-        print(f"Detected duration: {out['duration']} minutes")
+    # First check for "an hour" or similar
+    if re.search(r"\ban?\s+hour\b", prompt, re.I):
+        out["duration"] = 60
+        print(f"Detected duration: {out['duration']} minutes (from 'an hour')")
     else:
-        print(f"Using default duration: {out['duration']} minutes")
+        # Then check for specific durations
+        m = re.search(r"(\d+)\s*[-\s]?(minutes?|mins?|hours?|h)\b", prompt, re.I)
+        if m:
+            val = int(m.group(1))
+            out["duration"] = val * 60 if m.group(2).lower().startswith(("h", "hour")) else val
+            print(f"Detected duration: {out['duration']} minutes")
+        else:
+            print(f"Using default duration: {out['duration']} minutes")
+
+    # Check for "middle of month" or similar phrases
+    middle_month_match = re.search(r"\b(?:middle|mid)(?:\s+of)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    if middle_month_match:
+        month_name = middle_month_match.group(1).lower()
+        months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                 'july', 'august', 'september', 'october', 'november', 'december']
+        month_num = months.index(month_name) + 1
+        
+        # Get the year that puts this month in the future
+        target_year = now.year
+        if month_num < now.month:
+            target_year += 1
+            
+        # For middle of month, start around the 10th and end around the 20th
+        start_date = datetime(target_year, month_num, 10, tzinfo=LOCAL_TZ)
+        end_date = datetime(target_year, month_num, 20, tzinfo=LOCAL_TZ)
+        
+        print(f"\n📅 Detected middle of {month_name.capitalize()}:")
+        print(f"- Start: {start_date.strftime('%Y-%m-%d')}")
+        print(f"- End: {end_date.strftime('%Y-%m-%d')}")
+        
+        out["start"] = start_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+        out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        return out
 
     # Check for month specification
-    month_match = re.search(r"\b(in|during|for)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    month_match = re.search(r"\b(?:in|during|for)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
     if month_match:
-        month_name = month_match.group(2).lower()
+        month_name = month_match.group(1).lower()
         months = ['january', 'february', 'march', 'april', 'may', 'june', 
                  'july', 'august', 'september', 'october', 'november', 'december']
         month_num = months.index(month_name) + 1
@@ -110,16 +166,140 @@ def extract_parameters(prompt: str) -> dict:
         else:
             end_date = datetime(target_year, month_num + 1, 1, tzinfo=LOCAL_TZ)
             
-        print(f"Detected month range: {start_date.date()} to {end_date.date()}")
+        print(f"\n📅 Detected month range:")
+        print(f"- Start: {start_date.strftime('%Y-%m-%d')}")
+        print(f"- End: {end_date.strftime('%Y-%m-%d')}")
         
         out["start"] = start_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
         out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
         return out
 
-    # Handle specific date ranges with "between DATE and DATE"
+    # Handle "tomorrow" specifically
+    if "tomorrow" in prompt.lower():
+        tomorrow = now + timedelta(days=1)
+        out["start"] = tomorrow.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+        out["end"] = tomorrow.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        print(f"Detected tomorrow: {out['start'].date()}")
+
+    # Handle "X weeks from now" or "in X weeks"
+    weeks_from_now = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+weeks?\s+(?:from\s+now|ahead|away|from\s+today)\b", prompt, re.I)
+    if not weeks_from_now:
+        weeks_from_now = re.search(r"\bin\s+(\d+|" + "|".join(_NUM_WORDS) + r")\s+weeks?\b", prompt, re.I)
+    
+    if weeks_from_now:
+        num_str = weeks_from_now.group(1).lower()
+        num_weeks = _NUM_WORDS.get(num_str, int(num_str))
+        print(f"Detected: {num_weeks} weeks from now")
+        
+        # Calculate the exact date
+        target_date = now + timedelta(weeks=num_weeks)
+        # Set start to beginning of the target day
+        out["start"] = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Set end to end of the target day
+        out["end"] = (target_date + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        print(f"Date window: {out['start']} → {out['end']}")
+        return out
+
+    # Handle "after DATE" format
+    after_date = re.search(r"\bafter\s+(?:the\s+)?(\d+)(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    if after_date:
+        day = int(after_date.group(1))
+        month_name = after_date.group(2).lower()
+        months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                 'july', 'august', 'september', 'october', 'november', 'december']
+        month_num = months.index(month_name) + 1
+        
+        # Get the year that puts this date in the future
+        target_year = now.year
+        target_date = datetime(target_year, month_num, day, tzinfo=LOCAL_TZ)
+        if target_date < now:
+            target_year += 1
+            target_date = datetime(target_year, month_num, day, tzinfo=LOCAL_TZ)
+            
+        print(f"\n🔍 Debug: Date parsing:")
+        print(f"Input date: {month_name.capitalize()} {day}")
+        print(f"Target date: {target_date.date()}")
+        
+        # Set start to the day after the specified date
+        out["start"] = (target_date + timedelta(days=1)).replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+        
+        # For multiple slots, extend the search range based on count
+        slot_count = _extract_count(prompt)
+        # Search a much longer period - 3 months by default, or more if we need more slots
+        days_to_search = max(90, slot_count * 10)  # Much longer search window - 3 months minimum
+        out["end"] = (out["start"] + timedelta(days=days_to_search)).replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        
+        print(f"\n📅 Search Parameters:")
+        print(f"- Start date: {out['start'].strftime('%Y-%m-%d %H:%M')} ({out['start'].strftime('%A')})")
+        print(f"- End date: {out['end'].strftime('%Y-%m-%d %H:%M')} ({out['end'].strftime('%A')})")
+        print(f"- Search duration: {days_to_search} days ({days_to_search/7:.1f} weeks)")
+        print(f"- Slots needed: {slot_count}")
+        print(f"- Work hours: {out['earliest']:02d}:00 - {out['latest']:02d}:00")
+        print(f"- Time zone: {LOCAL_TZ}")
+        print(f"- Duration per slot: {out['duration']} minutes")
+        
+        return out
+
+    # Handle specific dates like "June 13th" or "13th of June"
+    specific_date = re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d+)(?:st|nd|rd|th)?\b|\b(\d+)(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    
+    if specific_date:
+        # Extract month and day from either format
+        if specific_date.group(1):  # "June 13th" format
+            month_name = specific_date.group(1).lower()
+            day = int(specific_date.group(2))
+        else:  # "13th of June" format
+            month_name = specific_date.group(4).lower()
+            day = int(specific_date.group(3))
+            
+        months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                 'july', 'august', 'september', 'october', 'november', 'december']
+        month_num = months.index(month_name) + 1
+        
+        # Get the year that puts this date in the future
+        target_year = now.year
+        target_date = datetime(target_year, month_num, day, tzinfo=LOCAL_TZ)
+        if target_date < now:
+            target_year += 1
+            target_date = datetime(target_year, month_num, day, tzinfo=LOCAL_TZ)
+            
+        print(f"Detected specific date: {target_date.date()}")
+        
+        # Set the time window for this specific day
+        out["start"] = target_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+        out["end"] = target_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        
+        # Handle lunch time constraints
+        if "after lunch" in prompt.lower():
+            print("Detected: after lunch specification")
+            # Set start time to 13:15 (typical end of lunch)
+            lunch_end_hour = 13
+            lunch_end_minute = 15
+            out["earliest"] = lunch_end_hour  # Update earliest to ensure no slots before lunch
+            out["start"] = out["start"].replace(hour=lunch_end_hour, minute=lunch_end_minute)
+            print(f"Adjusted start time to after lunch: {out['start']}")
+        elif "before lunch" in prompt.lower():
+            print("Detected: before lunch specification")
+            # Set end time to 11:30 (typical start of lunch)
+            lunch_start_hour = 11
+            lunch_start_minute = 30
+            out["latest"] = lunch_start_hour  # Update latest to ensure no slots during/after lunch start
+            out["end"] = out["end"].replace(hour=lunch_start_hour, minute=lunch_start_minute)
+            print(f"Adjusted end time to before lunch: {out['end']}")
+        
+        return out
+
+    # Handle specific date ranges with "between DATE and DATE" or "DATE - DATE" or "DATE to DATE"
     date_range_match = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:\s|$)", prompt, re.I)
+    if not date_range_match:
+        # Try other date range formats
+        date_range_match = re.search(r"(\d+(?:st|nd|rd|th)?\s+(?:of\s+)?[a-zA-Z]+|\b[a-zA-Z]+\s+\d+(?:st|nd|rd|th)?)\s*[-–—]\s*(\d+(?:st|nd|rd|th)?\s+(?:of\s+)?[a-zA-Z]+|\b[a-zA-Z]+\s+\d+(?:st|nd|rd|th)?)", prompt, re.I)
+        if not date_range_match:
+            date_range_match = re.search(r"(\d+(?:st|nd|rd|th)?\s+(?:of\s+)?[a-zA-Z]+|\b[a-zA-Z]+\s+\d+(?:st|nd|rd|th)?)\s+to\s+(\d+(?:st|nd|rd|th)?\s+(?:of\s+)?[a-zA-Z]+|\b[a-zA-Z]+\s+\d+(?:st|nd|rd|th)?)", prompt, re.I)
+    
     if date_range_match:
         date1, date2 = date_range_match.groups()
+        print(f"Detected date range: '{date1}' to '{date2}'")
         
         # Try to parse both dates
         start_date = dateparser.parse(date1, settings=_DATE_SETTINGS)
@@ -127,49 +307,41 @@ def extract_parameters(prompt: str) -> dict:
             print(f"Could not parse start date: {date1}")
             return out
             
-        # For the end date, we need to ensure it uses the same month context as the start date
-        # if only day numbers are provided
-        if re.match(r'^\d+$', date2.strip()):  # If end date is just a number
-            # Use the same month and year as start_date
-            try:
-                day = int(date2.strip())
-                end_date = start_date.replace(day=day)
-                # If the day would make end_date before start_date, move to next month
-                if end_date < start_date:
-                    if end_date.month == 12:
-                        end_date = end_date.replace(year=end_date.year + 1, month=1)
-                    else:
-                        end_date = end_date.replace(month=end_date.month + 1)
-            except ValueError:
-                print(f"Invalid day number for end date: {date2}")
-                return out
-        else:
-            # Try to parse normally
-            end_date = dateparser.parse(date2, settings=_DATE_SETTINGS)
+        # For the end date, we need to ensure it uses the same year context as the start date
+        end_date = dateparser.parse(date2, settings={
+            **_DATE_SETTINGS,
+            "RELATIVE_BASE": start_date  # Use start_date as reference for end_date
+        })
             
         if not end_date:
             print(f"Could not parse end date: {date2}")
             return out
             
-        print(f"Detected date range: {start_date.date()} to {end_date.date()}")
+        print(f"Initial parsed date range: {start_date.date()} to {end_date.date()}")
+        
+        # Ensure dates are in the future
+        if start_date < now:
+            # Move both dates to next year
+            start_date = start_date.replace(year=now.year + 1)
+            end_date = end_date.replace(year=now.year + 1)
+            print(f"Moved dates to next year: {start_date.date()} to {end_date.date()}")
         
         # Validate the range
         if end_date < start_date:
             print(f"Warning: End date {end_date.date()} is before start date {start_date.date()}")
-            # Try to fix by assuming same month as start date
-            if end_date.month != start_date.month:
-                end_date = end_date.replace(month=start_date.month)
-                if end_date < start_date:  # If still before, try next month
-                    if end_date.month == 12:
-                        end_date = end_date.replace(year=end_date.year + 1, month=1)
-                    else:
-                        end_date = end_date.replace(month=end_date.month + 1)
+            # If in different years, try adjusting end_date to same year as start_date
+            end_date = end_date.replace(year=start_date.year)
+            if end_date < start_date:  # If still before, try next month
+                if end_date.month < start_date.month:
+                    # Try next year
+                    end_date = end_date.replace(year=end_date.year + 1)
                 print(f"Adjusted to: {start_date.date()} to {end_date.date()}")
             
         # Set the start and end times
         out["start"] = start_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
-        # Add one day to end_date to include the full day
-        out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0) + timedelta(days=1)
+        # Include the full end day
+        out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        print(f"Final date range: {out['start']} to {out['end']}")
         return out
 
     # Handle date ranges between weekdays
@@ -241,10 +413,23 @@ def extract_parameters(prompt: str) -> dict:
                 print(f"{day.capitalize()} window: {out['start']} → {out['end']}")
                 break
 
-    # Handle lunch hours preference
-    if "lunch" in prompt.lower():
-        print("Detected lunch hours preference")
-        # We'll handle this by adjusting the time windows later
+    # After all date/time processing, handle lunch time constraints
+    if "after lunch" in prompt.lower():
+        print("Detected: after lunch specification")
+        # Set start time to 13:15 (typical end of lunch)
+        lunch_end_hour = 13
+        lunch_end_minute = 15
+        out["earliest"] = lunch_end_hour  # Update earliest to ensure no slots before lunch
+        out["start"] = out["start"].replace(hour=lunch_end_hour, minute=lunch_end_minute)
+        print(f"Adjusted start time to after lunch: {out['start']}")
+    elif "before lunch" in prompt.lower():
+        print("Detected: before lunch specification")
+        # Set end time to 11:30 (typical start of lunch)
+        lunch_start_hour = 11
+        lunch_start_minute = 30
+        out["latest"] = lunch_start_hour  # Update latest to ensure no slots during/after lunch start
+        out["end"] = out["end"].replace(hour=lunch_start_hour, minute=lunch_start_minute)
+        print(f"Adjusted end time to before lunch: {out['end']}")
 
     # After / before hour filters
     aft = re.search(r"\bafter\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", prompt, re.I)
@@ -275,15 +460,6 @@ def extract_parameters(prompt: str) -> dict:
             out["latest"] = max(out["earliest"] + 1, out["latest"] + 12)
             print(f"Adjusted latest to ensure after earliest: {out['latest']}:00")
 
-    # Slot count
-    out["count"] = _extract_count(prompt)
-    print(f"Requested slots: {out['count']}")
-    
-    # Ensure start time is at the beginning of work hours
-    if out["start"].hour < out["earliest"]:
-        out["start"] = out["start"].replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
-        print(f"Adjusted start to work hours: {out['start']}")
-    
     print("\nFinal parameters:")
     print(f"Start: {out['start']}")
     print(f"End: {out['end']}")

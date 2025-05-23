@@ -2,16 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Calendar Slot Finder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Find a time using Google Calendar</title>
   <style>
     :root {
-      --primary: #B939F8;          /* Stravito Purple */
-      --primary-dark: #9B14D9;     /* Darker Purple */
-      --accent: #FF5FA7;           /* Stravito Pink */
-      --accent-dark: #FF338C;      /* Darker Pink */
+      --primary: #6366f1;          /* Indigo */
+      --primary-dark: #4f46e5;     /* Darker Indigo */
+      --accent: #ec4899;           /* Pink */
+      --accent-dark: #db2777;      /* Darker Pink */
+      --success: #22c55e;          /* Green */
       --gray-50: #f9fafb;
       --gray-100: #f3f4f6;
       --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
       --gray-700: #374151;
       --gray-800: #1f2937;
     }
@@ -20,32 +23,45 @@
       font-family: system-ui, -apple-system, sans-serif;
       line-height: 1.5;
       color: var(--gray-800);
-      padding: 2rem;
-      max-width: 48rem;
-      margin: auto;
+      padding: 1rem;
+      margin: 0;
       background: var(--gray-50);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
 
     .container {
       background: white;
       padding: 2rem;
-      border-radius: 12px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      border-radius: 16px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+      width: 100%;
+      max-width: 48rem;
+      margin: 2rem auto;
     }
 
     h1 {
-      font-size: 1.5rem;
-      font-weight: 600;
+      font-size: 2rem;
+      font-weight: 700;
       margin: 0 0 2rem 0;
       color: var(--gray-800);
-      background: linear-gradient(45deg, var(--primary), var(--accent));
+      text-align: center;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
 
     .step {
-      margin-bottom: 2rem;
+      margin-bottom: 2.5rem;
+      animation: fadeIn 0.5s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     .step-header {
@@ -55,21 +71,23 @@
     }
 
     .step-number {
-      background: linear-gradient(45deg, var(--primary), var(--accent));
+      background: linear-gradient(135deg, var(--primary), var(--accent));
       color: white;
-      width: 24px;
-      height: 24px;
-      border-radius: 12px;
+      width: 28px;
+      height: 28px;
+      border-radius: 14px;
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 0.875rem;
+      font-weight: 600;
       margin-right: 0.75rem;
     }
 
     .step-title {
-      font-weight: 500;
-      color: var(--gray-700);
+      font-weight: 600;
+      font-size: 1.125rem;
+      color: var(--gray-800);
     }
 
     button {
@@ -77,16 +95,20 @@
       color: white;
       border: none;
       padding: 0.75rem 1.5rem;
-      border-radius: 6px;
-      font-weight: 500;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.875rem;
       cursor: pointer;
       transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
     }
 
     button:hover {
       background: var(--primary-dark);
       transform: translateY(-1px);
-      box-shadow: 0 2px 4px rgba(185, 57, 248, 0.2);
+      box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.2);
     }
 
     button:disabled {
@@ -102,54 +124,118 @@
 
     #findBtn:hover {
       background: var(--accent-dark);
-      box-shadow: 0 2px 4px rgba(255, 95, 167, 0.2);
+      box-shadow: 0 4px 6px -1px rgba(236, 72, 153, 0.2);
     }
 
     textarea {
       width: 100%;
-      padding: 0.75rem;
+      padding: 0.875rem;
       border: 1px solid var(--gray-200);
-      border-radius: 6px;
+      border-radius: 8px;
       font-family: inherit;
       font-size: 0.875rem;
       line-height: 1.5;
       resize: vertical;
       transition: all 0.2s ease;
+      box-sizing: border-box;
     }
 
     textarea:focus {
       outline: none;
       border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(185, 57, 248, 0.1);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
     }
 
-    #out {
-      font-family: ui-monospace, monospace;
-      background: var(--gray-100);
-      padding: 1rem;
-      border-radius: 6px;
-      white-space: pre-wrap;
+    #slots-container {
+      display: grid;
+      gap: 1rem;
       margin-top: 1rem;
+    }
+
+    .slot-card {
+      background: white;
+      border: 1px solid var(--gray-200);
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: all 0.2s ease;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-10px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .slot-card:hover {
+      border-color: var(--primary);
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.1);
+      transform: translateY(-2px);
+    }
+
+    .slot-header {
       font-size: 0.875rem;
-      line-height: 1.7;
-      border-left: 3px solid var(--accent);
+      font-weight: 600;
+      color: var(--primary);
+      margin-bottom: 1rem;
+      letter-spacing: -0.01em;
+    }
+
+    .slot-date {
+      margin-bottom: 1rem;
+    }
+
+    .slot-date-value {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--gray-800);
+      letter-spacing: -0.02em;
+    }
+
+    .slot-time {
+      color: var(--gray-700);
+      font-size: 1rem;
+      line-height: 1.5;
+    }
+
+    .slot-day {
+      font-size: 1rem;
+      color: var(--gray-700);
+      font-weight: 500;
+    }
+
+    .slot-time-cet {
+      font-weight: 500;
+    }
+
+    .slot-time-divider {
+      border: none;
+      border-top: 1px solid var(--gray-200);
+      margin: 0.5rem 0;
+      width: 100%;
+    }
+
+    .slot-time-utc {
+      color: var(--gray-500);
+      font-size: 0.875rem;
     }
 
     .examples {
-      margin-top: 0.5rem;
-      font-size: 0.875rem;
-      color: var(--gray-700);
+      margin-top: 0.75rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
     }
 
     .example {
-      display: inline-block;
       background: var(--gray-100);
-      padding: 0.25rem 0.75rem;
-      border-radius: 1rem;
-      margin: 0.25rem;
+      padding: 0.5rem 1rem;
+      border-radius: 2rem;
+      font-size: 0.875rem;
+      color: var(--gray-700);
       cursor: pointer;
       transition: all 0.2s ease;
-      border: 1px solid transparent;
+      border: 1px solid var(--gray-200);
+      user-select: none;
     }
 
     .example:hover {
@@ -157,19 +243,74 @@
       border-color: var(--primary);
       color: var(--primary);
       transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(99, 102, 241, 0.1);
+    }
+
+    .loading {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--gray-700);
+      font-size: 0.875rem;
+      padding: 1rem;
+      background: var(--gray-50);
+      border-radius: 8px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+
+    .error {
+      color: #ef4444;
+      background: #fee2e2;
+      padding: 1rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    @media (max-width: 640px) {
+      .container {
+        padding: 1.5rem;
+        margin: 1rem;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+      }
+
+      .examples {
+        gap: 0.375rem;
+      }
+
+      .example {
+        padding: 0.375rem 0.75rem;
+        font-size: 0.75rem;
+      }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Calendar Slot Finder</h1>
+    <h1>Find a time using Google Calendar</h1>
     
     <div class="step">
       <div class="step-header">
         <div class="step-number">1</div>
-        <div class="step-title">Authorize with Google Calendar</div>
+        <div class="step-title">Authorise with Google Calendar</div>
       </div>
-      <button id="loginBtn">Authorize Access</button>
+      <button id="loginBtn">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
+        Authorize Access
+      </button>
     </div>
 
     <div class="step">
@@ -177,11 +318,13 @@
         <div class="step-number">2</div>
         <div class="step-title">Describe when you'd like to meet</div>
       </div>
-      <textarea id="prompt" rows="3" placeholder="Example: Find me three 30-minute slots next week between Tuesday and Thursday"></textarea>
+      <textarea id="prompt" rows="3" placeholder="Example: Find me 3 slots for 30 minutes in the middle of June"></textarea>
       <div class="examples">
-        <div class="example">next Monday after 2 PM</div>
-        <div class="example">45-minute slot tomorrow morning</div>
-        <div class="example">3 slots next week</div>
+        <div class="example">2 hours between July 1-5</div>
+        <div class="example">30 minutes after lunch tomorrow</div>
+        <div class="example">3 one-hour slots next week</div>
+        <div class="example">45 minutes between 2-4pm</div>
+        <div class="example">1 hour on June 13th before lunch</div>
       </div>
     </div>
 
@@ -190,8 +333,13 @@
         <div class="step-number">3</div>
         <div class="step-title">Find available slots</div>
       </div>
-      <button id="findBtn">Find Slots</button>
-      <pre id="out"></pre>
+      <button id="findBtn">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        Find Slots
+      </button>
+      <div id="slots-container"></div>
     </div>
   </div>
 
