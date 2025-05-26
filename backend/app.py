@@ -2,7 +2,7 @@ import os, pathlib, pickle
 from flask import Flask, redirect, url_for, session, request, jsonify, send_from_directory, make_response
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from calendar_utils import split_window_into_chunks, _to_local, _to_utc
 
 from config         import SCOPES, DEFAULT_SLOT_MINUTES
@@ -76,16 +76,20 @@ def free_slots():
     print("\n🔎 NLP extracted parameters:")
     print(f"- Duration: {params['duration']} minutes")
     print(f"- Count: {params['count']} slots")
-    print(f"- Start: {params['start']}")
-    print(f"- End: {params['end']}")
+    print(f"- Start: {params['start'].strftime('%Y-%m-%d %H:%M %Z')}")
+    print(f"- End: {params['end'].strftime('%Y-%m-%d %H:%M %Z')}")
     print(f"- Earliest: {params['earliest']}:00")
     print(f"- Latest: {params['latest']}:00")
+    if params.get('allowed_days'):
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        print(f"- Allowed days: {[days[i] for i in params['allowed_days']]}")
 
     duration = params["duration"]
     start, end = params["start"], params["end"]
     need_n = params["count"]  # Get count directly from params
 
     print(f"\n🎯 Searching for {need_n} slots of {duration} minutes each")
+    print(f"Search window: {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}")
 
     service = get_service(creds)
     busy = list_events(service, THOR_CAL_ID, start, end)
@@ -118,7 +122,7 @@ def free_slots():
     seen_dates = set()
     print(f"\n🎯 Attempting to select {need_n} slots from {len(chunks)} available chunks")
     
-    # Try to get slots from different days first
+    # First pass: Try to get slots from different days
     for chunk in chunks:
         chunk_date = chunk[0].date()
         if len(chosen) < need_n and chunk_date not in seen_dates:
@@ -126,16 +130,35 @@ def free_slots():
             seen_dates.add(chunk_date)
             print(f"Selected slot {len(chosen)}/{need_n} (different day): {chunk[0].strftime('%Y-%m-%d %H:%M')} → {chunk[1].strftime('%H:%M')}")
     
-    # If we still need more slots, take any available ones
+    # Second pass: If we still need more slots, take any remaining slots
     if len(chosen) < need_n:
-        for chunk in chunks:
-            if chunk not in chosen and len(chosen) < need_n:
-                chosen.append(chunk)
-                print(f"Selected slot {len(chosen)}/{need_n} (any day): {chunk[0].strftime('%Y-%m-%d %H:%M')} → {chunk[1].strftime('%H:%M')}")
+        print(f"Still need {need_n - len(chosen)} more slots, taking any available slots")
+        remaining_chunks = [c for c in chunks if c not in chosen]  # Only consider unchosen chunks
+        
+        for chunk in remaining_chunks:
             if len(chosen) >= need_n:
-                print(f"✅ Found all {need_n} requested slots")
                 break
+                
+            # For slots on the same day, just ensure they don't overlap
+            can_add = True
+            chunk_start, chunk_end = chunk
+            chunk_date = chunk_start.date()
+            
+            # Check against existing chosen slots for this day
+            day_slots = [s for s in chosen if s[0].date() == chunk_date]
+            for existing_start, existing_end in day_slots:
+                # Only check for direct overlap, no buffer needed
+                if (chunk_start < existing_end and chunk_end > existing_start):
+                    can_add = False
+                    print(f"Skipping slot {chunk_start.strftime('%H:%M')}-{chunk_end.strftime('%H:%M')} due to overlap")
+                    break
+            
+            if can_add:
+                chosen.append(chunk)
+                print(f"Selected slot {len(chosen)}/{need_n} (same day allowed): {chunk_start.strftime('%Y-%m-%d %H:%M')} → {chunk_end.strftime('%H:%M')}")
 
+    # Sort chosen slots by date/time
+    chosen.sort(key=lambda x: x[0])
     print(f"\n✨ Selected {len(chosen)} slots out of {len(chunks)} available chunks")
 
     # Format response as clean text

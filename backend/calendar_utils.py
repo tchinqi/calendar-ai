@@ -216,36 +216,11 @@ def list_events(service, calendar_id: str, start_dt: datetime, end_dt: datetime)
     # Sort busy periods by start time
     busy.sort()
     
-    print("\n🗓️ Calendar Events (before merging):")
+    print("\n🗓️ Calendar Events:")
     for ev_start, ev_end in busy:
         start_local = _to_local(ev_start)
         end_local = _to_local(ev_end)
         print(f"- {start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%H:%M')}")
-    
-    # Merge any busy periods that overlap or are very close together
-    min_gap = timedelta(minutes=1)  # Minimum gap we consider viable between meetings
-    merged = []
-    if busy:
-        current = busy[0]
-        for next_period in busy[1:]:
-            # Convert both periods to local time for comparison
-            current_end_local = _to_local(current[1])
-            next_start_local = _to_local(next_period[0])
-            
-            if next_start_local - current_end_local <= min_gap:
-                # Merge the periods
-                current = (current[0], max(current[1], next_period[1]))
-            else:
-                merged.append(current)
-                current = next_period
-        merged.append(current)
-        busy = merged
-        
-        print("\n🗓️ Merged Events (after combining overlaps):")
-        for ev_start, ev_end in busy:
-            start_local = _to_local(ev_start)
-            end_local = _to_local(ev_end)
-            print(f"- {start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%H:%M')}")
     
     return busy
 
@@ -267,22 +242,16 @@ def split_window_into_chunks(win_start, win_end, chunk_minutes):
     chunks = []
     cur = win_start
     delta = timedelta(minutes=chunk_minutes)
-    buffer = timedelta(minutes=15)  # 15-minute buffer between slots
     
     print(f"\n🔍 Splitting window from {win_start.strftime('%H:%M')} to {win_end.strftime('%H:%M')} into {chunk_minutes}-minute chunks")
     print(f"Window duration: {(win_end - win_start).total_seconds() / 60:.0f} minutes")
     
     while cur + delta <= win_end:
         chunk = (cur, cur + delta)
-        chunks.append(chunk)
         print(f"  Added chunk: {cur.strftime('%H:%M')} → {(cur + delta).strftime('%H:%M')}")
-        # Move to next potential slot start time, with a buffer
-        cur += delta + buffer
+        chunks.append(chunk)
+        cur += delta  # Move to next slot without buffer
         
-        # If we've moved to the next day, reset to the start of the work day
-        if cur.date() > win_start.date():
-            cur = datetime.combine(cur.date(), time(hour=win_start.hour), tzinfo=LOCAL_TZ)
-    
     print(f"Found {len(chunks)} chunks in this window")
     return chunks
 
@@ -433,8 +402,8 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest, allowed_da
                 slots_found_today += 1
                 total_slots_found += 1
             
-            # Move to next potential slot start time, with a buffer
-            slot_start += timedelta(minutes=45)  # Add 15-minute buffer between slots
+            # Move to next potential slot start time - use the requested duration
+            slot_start += timedelta(minutes=duration_min)  # No extra buffer needed
 
         if slots_found_today > 0:
             days_with_slots += 1

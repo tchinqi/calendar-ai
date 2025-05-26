@@ -1,5 +1,5 @@
 import re, calendar
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 from dateparser.search import search_dates
 from zoneinfo import ZoneInfo
 import dateparser
@@ -19,23 +19,41 @@ def _extract_count(prompt: str) -> int:
     - "3 slots" -> 3
     - "three slots" -> 3
     - "Find me 2 slots" -> 2
+    - "3 one-hour slots" -> 3
+    - "3 30-minute slots" -> 3
+    - "two two-hour slots" -> 2
+    - "2 1 hour slots" -> 2
+    - "2 1-hour slots" -> 2
     """
     print(f"\n🔢 Extracting slot count from: '{prompt}'")
     
-    # First try numeric digits
-    m = re.search(r"\b(\d+)\s+slots?\b", prompt, re.I)
-    if m:
-        count = max(1, int(m.group(1)))
-        print(f"Found numeric slot count: {count}")
-        return count
-        
-    # Then try word numbers
-    m = re.search(r"\b(" + "|".join(_NUM_WORDS) + r")\s+slots?\b", prompt, re.I)
-    if m:
-        count = _NUM_WORDS.get(m.group(1).lower(), 1)
-        print(f"Found word slot count: {count}")
-        return count
-        
+    # First try word numbers at start of string or with slots
+    word_patterns = [
+        r"^(" + "|".join(_NUM_WORDS) + r")\s+",  # Word number at start
+        r"\b(" + "|".join(_NUM_WORDS) + r")\s+(?:(?:\d+[-\s]*hour|one-hour|two-hour|hour|minute|min|thirty|thirty-minute|30-minute|45-minute)\s+)?slots?\b"  # Word number with optional duration
+    ]
+    
+    for pattern in word_patterns:
+        m = re.search(pattern, prompt, re.I)
+        if m:
+            count = _NUM_WORDS.get(m.group(1).lower(), 1)
+            print(f"Found word slot count: {count}")
+            return count
+    
+    # Then try numeric digits with various patterns
+    num_patterns = [
+        r"\b(\d+)\s+(?:(?:\d+[-\s]*hour|one-hour|two-hour|hour|minute|min|thirty|thirty-minute|30-minute|45-minute)\s+)?slots?\b",  # "3 one-hour slots", "2 1-hour slots"
+        r"^(\d+)\s+",  # Number at start of string
+        r"\b(\d+)\s+slots?\b",  # Basic "X slots"
+    ]
+    
+    for pattern in num_patterns:
+        m = re.search(pattern, prompt, re.I)
+        if m:
+            count = max(1, int(m.group(1)))
+            print(f"Found numeric slot count: {count}")
+            return count
+    
     print("No slot count found, defaulting to 1")
     return 1
 
@@ -93,27 +111,83 @@ def extract_parameters(prompt: str) -> dict:
     out = {
         "start":    now,
         "end":      now + timedelta(days=30),  # Look ahead 30 days by default instead of 7
-        "duration": 20,  # Default to 20 minutes
+        "duration": _extract_duration(prompt),  # Use new duration extraction
         "earliest": 9,    # Default work day start
         "latest":   17,   # Default work day end
         "count":    _extract_count(prompt),  # Extract count immediately and store it
         "allowed_days": None,  # List of allowed weekday indices (0=Monday, 6=Sunday) or None for all days
     }
 
-    # Duration - look for this first to set default if not found
-    # First check for "an hour" or similar
-    if re.search(r"\ban?\s+hour\b", prompt, re.I):
-        out["duration"] = 60
-        print(f"Detected duration: {out['duration']} minutes (from 'an hour')")
-    else:
-        # Then check for specific durations
-        m = re.search(r"(\d+)\s*[-\s]?(minutes?|mins?|hours?|h)\b", prompt, re.I)
-        if m:
-            val = int(m.group(1))
-            out["duration"] = val * 60 if m.group(2).lower().startswith(("h", "hour")) else val
-            print(f"Detected duration: {out['duration']} minutes")
+    # Check for "Nth week of month" patterns with optional year
+    week_of_month = re.search(r"\b(first|second|third|fourth|last|1st|2nd|3rd|4th)\s+week\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?\b", prompt, re.I)
+    if week_of_month:
+        week_spec = week_of_month.group(1).lower()
+        month_name = week_of_month.group(2).lower()
+        specified_year = int(week_of_month.group(3)) if week_of_month.group(3) else None
+        
+        # Convert ordinal words to numbers
+        week_map = {
+            'first': 1, '1st': 1,
+            'second': 2, '2nd': 2,
+            'third': 3, '3rd': 3,
+            'fourth': 4, '4th': 4,
+            'last': -1
+        }
+        week_num = week_map[week_spec]
+        
+        # Get month number
+        months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                 'july', 'august', 'september', 'october', 'november', 'december']
+        month_num = months.index(month_name) + 1
+        
+        # Get the year - use specified year if provided, otherwise use 2025
+        if specified_year:
+            target_year = specified_year  # Use exactly what was specified
+            print(f"Using specified year {target_year} for {week_spec} week of {month_name}")
         else:
-            print(f"Using default duration: {out['duration']} minutes")
+            target_year = 2025  # Default to 2025 for all future dates
+            print(f"No year specified, using 2025 for {week_spec} week of {month_name}")
+        
+        print(f"\n📅 Selected year {target_year} for {week_spec} week of {month_name}")
+        
+        # Get the first day of the month with the final year
+        first_day = datetime(target_year, month_num, 1, tzinfo=LOCAL_TZ)
+        
+        # Find the first Monday of the month
+        while first_day.weekday() != 0:  # 0 is Monday
+            first_day += timedelta(days=1)
+            
+        # Calculate the target week's Monday
+        if week_num > 0:
+            target_monday = first_day + timedelta(weeks=(week_num - 1))
+        else:  # Last week
+            # Get the last day of the month
+            if month_num == 12:
+                last_day = datetime(target_year + 1, 1, 1, tzinfo=LOCAL_TZ) - timedelta(days=1)
+            else:
+                last_day = datetime(target_year, month_num + 1, 1, tzinfo=LOCAL_TZ) - timedelta(days=1)
+            # Go back to the last Monday
+            while last_day.weekday() != 0:
+                last_day -= timedelta(days=1)
+            target_monday = last_day
+            
+        # Set the time window for the week
+        out["start"] = target_monday.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+        out["end"] = (target_monday + timedelta(days=5)).replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        out["allowed_days"] = list(range(5))  # Monday-Friday only
+        
+        print(f"Final date range:")
+        print(f"- Start: {out['start'].strftime('%Y-%m-%d %H:%M %Z')} ({out['start'].strftime('%A')})")
+        print(f"- End: {out['end'].strftime('%Y-%m-%d %H:%M %Z')} ({out['end'].strftime('%A')})")
+        print("Set to weekdays only (Monday-Friday)")
+        return out
+
+    # If no specific date is mentioned in the prompt, look for slots starting from tomorrow
+    if not any(word in prompt.lower() for word in ['today', 'tomorrow', 'next week', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']):
+        tomorrow = now.date() + timedelta(days=1)
+        out["start"] = datetime.combine(tomorrow, time(hour=out["earliest"]), tzinfo=LOCAL_TZ)
+        out["end"] = out["start"] + timedelta(days=30)
+        print(f"No specific date mentioned, looking from tomorrow: {out['start'].date()}")
 
     # Check for "mid month" or similar phrases
     middle_month_match = re.search(r"\b(?:middle|mid)(?:\s+of)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
@@ -142,17 +216,25 @@ def extract_parameters(prompt: str) -> dict:
         out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0) + timedelta(days=1)
         return out
 
-    # Handle time range with "between HH:MM and HH:MM" format
-    time_range_match = re.search(r"\bbetween\s+(\d{1,2})(?::(\d{2}))?\s*(?:and|to|-)\s*(\d{1,2})(?::(\d{2}))?\b", prompt, re.I)
+    # Handle time range with "between HH:MM and HH:MM" format or "X-Y(am|pm)" format
+    time_range_match = re.search(r"\bbetween\s+(\d{1,2})(?::(\d{2}))?\s*(?:and|to|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b|\b(\d{1,2})\s*-\s*(\d{1,2})\s*(am|pm)\b", prompt, re.I)
     if time_range_match:
-        start_hour = int(time_range_match.group(1))
-        start_min = int(time_range_match.group(2)) if time_range_match.group(2) else 0
-        end_hour = int(time_range_match.group(3))
-        end_min = int(time_range_match.group(4)) if time_range_match.group(4) else 0
+        if time_range_match.group(1):  # First format: "between X and Y"
+            start_hour = int(time_range_match.group(1))
+            start_min = int(time_range_match.group(2)) if time_range_match.group(2) else 0
+            end_hour = int(time_range_match.group(3))
+            end_min = int(time_range_match.group(4)) if time_range_match.group(4) else 0
+            meridiem = time_range_match.group(5)
+        else:  # Second format: "X-Ypm"
+            start_hour = int(time_range_match.group(6))
+            start_min = 0
+            end_hour = int(time_range_match.group(7))
+            end_min = 0
+            meridiem = time_range_match.group(8)
         
-        # Convert to 24-hour format if needed
-        out["earliest"] = _to_24h(start_hour, None)
-        out["latest"] = _to_24h(end_hour, None)
+        # Convert to 24-hour format
+        out["earliest"] = _to_24h(start_hour, meridiem)
+        out["latest"] = _to_24h(end_hour, meridiem)
         
         # Update start and end times
         out["start"] = out["start"].replace(hour=out["earliest"], minute=start_min)
@@ -180,34 +262,48 @@ def extract_parameters(prompt: str) -> dict:
         out["allowed_days"] = [5, 6]  # Saturday-Sunday
         print("Detected weekend days (Saturday-Sunday)")
 
-    # Check for month specification
-    month_match = re.search(r"\b(?:in|during|for)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    # Check for month specification with optional year
+    month_match = re.search(r"\b(?:in|during|for)?\s*(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?\b", prompt, re.I)
     if month_match:
         month_name = month_match.group(1).lower()
+        specified_year = int(month_match.group(2)) if month_match.group(2) else None
         months = ['january', 'february', 'march', 'april', 'may', 'june', 
                  'july', 'august', 'september', 'october', 'november', 'december']
         month_num = months.index(month_name) + 1
         
-        # Get the year that puts this month in the future
+        # Get the year - use specified year if provided, otherwise find next occurrence
         target_year = now.year
-        if month_num < now.month:
-            target_year += 1
+        if specified_year:
+            target_year = specified_year  # Use exactly what was specified
+        else:
+            # Calculate the target date
+            target_date = datetime(target_year, month_num, 1, tzinfo=LOCAL_TZ)
             
-        # Set start to the first of the month
+            # If the target date has passed, increment year
+            if target_date < now:
+                print(f"Target month ({target_date.strftime('%Y-%m')}) has passed, looking in {target_year + 1}")
+                target_year += 1
+            else:
+                print(f"Using current year {target_year} for {month_name}")
+            
+        # Set start to first of month
         start_date = datetime(target_year, month_num, 1, tzinfo=LOCAL_TZ)
         
-        # Set end to the first of the next month
+        # Set end to first of next month
         if month_num == 12:
             end_date = datetime(target_year + 1, 1, 1, tzinfo=LOCAL_TZ)
         else:
             end_date = datetime(target_year, month_num + 1, 1, tzinfo=LOCAL_TZ)
             
-        print(f"\n📅 Detected month range:")
-        print(f"- Start: {start_date.strftime('%Y-%m-%d')}")
-        print(f"- End: {end_date.strftime('%Y-%m-%d')}")
+        print(f"\n📅 Detected month range for {month_name} {target_year}:")
+        print(f"- Start: {start_date.strftime('%Y-%m-%d')} ({start_date.strftime('%A')})")
+        print(f"- End: {end_date.strftime('%Y-%m-%d')} ({end_date.strftime('%A')})")
         
+        # Set the time window and ensure we only look at weekdays
         out["start"] = start_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
         out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        out["allowed_days"] = list(range(5))  # Monday-Friday only
+        print("Set to weekdays only (Monday-Friday)")
         return out
 
     # Handle "tomorrow" specifically
@@ -481,16 +577,24 @@ def extract_parameters(prompt: str) -> dict:
     # Handle "next week" without specific days
     elif re.search(r"\bnext\s+week\b", prompt, re.I):
         print("Detected: next week")
-        # Find next Monday
-        start = now
-        while start.weekday() != 0:  # 0 is Monday
-            start += timedelta(days=1)
-        # Set to start of work day
-        start = start.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+        # Calculate the start of next week (next Monday)
+        today = now.date()
+        days_until_monday = (7 - today.weekday()) % 7
+        if days_until_monday == 0:  # If today is Monday, we want next Monday
+            days_until_monday = 7
+            
+        next_monday = today + timedelta(days=days_until_monday)
+        start = datetime.combine(next_monday, time(hour=out["earliest"]), tzinfo=LOCAL_TZ)
+        
+        # Set the window to the full work week
         out["start"] = start
-        out["end"] = start + timedelta(days=7)
-        print(f"Next week window: {start} → {out['end']}")
-    
+        out["end"] = start + timedelta(days=5)  # Look through Friday
+        out["allowed_days"] = list(range(5))  # Monday-Friday only
+        
+        print(f"Next week window: {out['start'].date()} → {out['end'].date()}")
+        print("Set to weekdays only (Monday-Friday)")
+        return out
+
     # Handle single specific weekday
     else:
         for i, day in enumerate(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']):
@@ -681,3 +785,58 @@ def parse_schedule_request(prompt: str) -> dict | None:
     out["end"] = now.replace(hour=23, minute=59, second=59)
     out["description"] = "today's schedule"
     return out
+
+def _extract_duration(prompt: str) -> int:
+    """Extract duration in minutes from the prompt.
+    
+    Examples:
+    - "1 hour" -> 60
+    - "one hour" -> 60
+    - "1-hour" -> 60
+    - "two hour" -> 120
+    - "2 hours" -> 120
+    - "30 minutes" -> 30
+    - "30 mins" -> 30
+    - "1 hour slot" -> 60
+    - "2 1-hour slots" -> 60
+    """
+    # First check for "an hour" or similar
+    if re.search(r"\ban?\s+hour\b", prompt, re.I):
+        return 60
+        
+    # Check for "X-hour" or "X hour" format with both digits and words
+    patterns = [
+        # Digit formats for hours
+        r"(\d+)\s*[-\s]*hours?\s*(?:slot|meeting|chunk)?\b",  # "2 hours", "2-hour", "2 hour slot"
+        r"\b(\d+)\s+\d+[-\s]*hours?\s*(?:slot|meeting|chunk)?\b",  # "2 1-hour slots"
+        # Word formats for hours
+        r"\b(" + "|".join(_NUM_WORDS) + r")\s*[-\s]*hours?\s*(?:slot|meeting|chunk)?\b",  # "two hours", "two-hour slot"
+        # Minute formats
+        r"(\d+)\s*[-\s]*(?:minutes?|mins?)\s*(?:slot|meeting|chunk)?\b",  # "30 minutes", "30 mins", "30 min slot"
+    ]
+    
+    for pattern in patterns:
+        m = re.search(pattern, prompt, re.I)
+        if m:
+            val = m.group(1).lower()
+            # Try word number first
+            num = _NUM_WORDS.get(val)
+            if num is None:
+                # Then try numeric
+                try:
+                    num = int(val)
+                except ValueError:
+                    continue
+            
+            # Convert to minutes
+            if "hour" in pattern:
+                return num * 60
+            else:
+                return num
+    
+    # Look for hour mentions without explicit numbers
+    if re.search(r"\bhour\s*(?:slot|meeting|chunk)?\b", prompt, re.I):
+        return 60
+                
+    # Default to 30 minutes
+    return 30
