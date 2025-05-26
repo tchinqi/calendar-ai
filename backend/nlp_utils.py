@@ -97,12 +97,8 @@ def extract_parameters(prompt: str) -> dict:
         "earliest": 9,    # Default work day start
         "latest":   17,   # Default work day end
         "count":    _extract_count(prompt),  # Extract count immediately and store it
+        "allowed_days": None,  # List of allowed weekday indices (0=Monday, 6=Sunday) or None for all days
     }
-
-    print(f"\n🔢 Initial parameters:")
-    print(f"- Requested slots: {out['count']}")
-    print(f"- Default duration: {out['duration']} minutes")
-    print(f"- Work hours: {out['earliest']}:00 - {out['latest']}:00")
 
     # Duration - look for this first to set default if not found
     # First check for "an hour" or similar
@@ -119,7 +115,7 @@ def extract_parameters(prompt: str) -> dict:
         else:
             print(f"Using default duration: {out['duration']} minutes")
 
-    # Check for "middle of month" or similar phrases
+    # Check for "mid month" or similar phrases
     middle_month_match = re.search(r"\b(?:middle|mid)(?:\s+of)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
     if middle_month_match:
         month_name = middle_month_match.group(1).lower()
@@ -129,10 +125,10 @@ def extract_parameters(prompt: str) -> dict:
         
         # Get the year that puts this month in the future
         target_year = now.year
-        if month_num < now.month:
+        if month_num < now.month or (month_num == now.month and now.day > 20):
             target_year += 1
             
-        # For middle of month, start around the 10th and end around the 20th
+        # For middle of month, use 10th to 20th
         start_date = datetime(target_year, month_num, 10, tzinfo=LOCAL_TZ)
         end_date = datetime(target_year, month_num, 20, tzinfo=LOCAL_TZ)
         
@@ -140,9 +136,49 @@ def extract_parameters(prompt: str) -> dict:
         print(f"- Start: {start_date.strftime('%Y-%m-%d')}")
         print(f"- End: {end_date.strftime('%Y-%m-%d')}")
         
+        # Set the time window
         out["start"] = start_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
-        out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0)
+        # Include the full end day
+        out["end"] = end_date.replace(hour=out["latest"], minute=0, second=0, microsecond=0) + timedelta(days=1)
         return out
+
+    # Handle time range with "between HH:MM and HH:MM" format
+    time_range_match = re.search(r"\bbetween\s+(\d{1,2})(?::(\d{2}))?\s*(?:and|to|-)\s*(\d{1,2})(?::(\d{2}))?\b", prompt, re.I)
+    if time_range_match:
+        start_hour = int(time_range_match.group(1))
+        start_min = int(time_range_match.group(2)) if time_range_match.group(2) else 0
+        end_hour = int(time_range_match.group(3))
+        end_min = int(time_range_match.group(4)) if time_range_match.group(4) else 0
+        
+        # Convert to 24-hour format if needed
+        out["earliest"] = _to_24h(start_hour, None)
+        out["latest"] = _to_24h(end_hour, None)
+        
+        # Update start and end times
+        out["start"] = out["start"].replace(hour=out["earliest"], minute=start_min)
+        out["end"] = out["end"].replace(hour=out["latest"], minute=end_min)
+        
+        print(f"Detected time range: {out['earliest']}:{start_min:02d} - {out['latest']}:{end_min:02d}")
+
+    # Check for day-of-week constraints
+    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    day_pattern = r"\b(" + "|".join(days) + r")\b"
+    found_days = re.findall(day_pattern, prompt.lower())
+    
+    # If we found specific days, use only those
+    if found_days:
+        out["allowed_days"] = [days.index(day) for day in found_days]
+        print(f"Detected allowed days: {[days[i] for i in out['allowed_days']]}")
+
+    # Handle "weekday" or "weekdays" to mean Monday-Friday
+    if re.search(r"\b(?:week|work)days?\b", prompt, re.I):
+        out["allowed_days"] = list(range(5))  # Monday-Friday
+        print("Detected weekdays (Monday-Friday)")
+    
+    # Handle "weekend" to mean Saturday-Sunday
+    if re.search(r"\bweekends?\b", prompt, re.I):
+        out["allowed_days"] = [5, 6]  # Saturday-Sunday
+        print("Detected weekend days (Saturday-Sunday)")
 
     # Check for month specification
     month_match = re.search(r"\b(?:in|during|for)\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
@@ -182,23 +218,83 @@ def extract_parameters(prompt: str) -> dict:
         print(f"Detected tomorrow: {out['start'].date()}")
 
     # Handle "X weeks from now" or "in X weeks"
-    weeks_from_now = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+weeks?\s+(?:from\s+now|ahead|away|from\s+today)\b", prompt, re.I)
-    if not weeks_from_now:
-        weeks_from_now = re.search(r"\bin\s+(\d+|" + "|".join(_NUM_WORDS) + r")\s+weeks?\b", prompt, re.I)
+    weeks_pattern = r"\b(?:in|after)\s+(\d+|" + "|".join(_NUM_WORDS) + r")\s+weeks?\b|\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+weeks?\s+(?:from\s+now|ahead|away|from\s+today)\b"
+    weeks_match = re.search(weeks_pattern, prompt, re.I)
     
-    if weeks_from_now:
-        num_str = weeks_from_now.group(1).lower()
-        num_weeks = _NUM_WORDS.get(num_str, int(num_str))
+    target_week_offset = 0
+    if weeks_match:
+        num_str = (weeks_match.group(1) or weeks_match.group(2)).lower()
+        try:
+            num_weeks = _NUM_WORDS.get(num_str)
+            if num_weeks is None:
+                num_weeks = int(num_str)
+        except ValueError:
+            print(f"Warning: Could not parse week number: {num_str}")
+            num_weeks = 1
+            
+        target_week_offset = num_weeks
         print(f"Detected: {num_weeks} weeks from now")
+    elif "next week" in prompt.lower():
+        target_week_offset = 1
+        print("Detected: next week")
+    
+    # Handle date ranges between weekdays with week offset
+    between_match = re.search(r"\bbetween\s+(\w+)\s+and\s+(\w+)\b", prompt, re.I)
+    if between_match:
+        day1, day2 = between_match.groups()
+        weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
         
-        # Calculate the exact date
-        target_date = now + timedelta(weeks=num_weeks)
-        # Set start to beginning of the target day
-        out["start"] = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Set end to end of the target day
-        out["end"] = (target_date + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        print(f"Date window: {out['start']} → {out['end']}")
-        return out
+        # Convert day names to indices
+        try:
+            idx1 = next(i for i, day in enumerate(weekdays) if day.startswith(day1.lower()))
+            idx2 = next(i for i, day in enumerate(weekdays) if day.startswith(day2.lower()))
+            
+            # Start from today + week offset
+            start = now + timedelta(weeks=target_week_offset)
+            # Find the first occurrence of day1 in the target week
+            while start.weekday() != idx1:
+                if start.weekday() > idx1:
+                    # If we've passed the target day, move to next week
+                    start += timedelta(days=(7 - start.weekday()) + idx1)
+                else:
+                    start += timedelta(days=1)
+            
+            # Find the occurrence of day2 in the same week
+            end = start
+            while end.weekday() != idx2:
+                if end.weekday() > idx2:
+                    # If we've passed the target day, move to next week
+                    end += timedelta(days=(7 - end.weekday()) + idx2)
+                else:
+                    end += timedelta(days=1)
+            
+            # Set work hours
+            out["start"] = start.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
+            out["end"] = end.replace(hour=out["latest"], minute=0, second=0, microsecond=0) + timedelta(days=1)
+            
+            # Set allowed days
+            if idx1 <= idx2:
+                out["allowed_days"] = list(range(idx1, idx2 + 1))
+            else:
+                out["allowed_days"] = list(range(idx1, 7)) + list(range(0, idx2 + 1))
+            
+            print(f"Date range: {weekdays[idx1].capitalize()} to {weekdays[idx2].capitalize()}")
+            print(f"Window: {out['start']} → {out['end']}")
+            print(f"Allowed days: {[weekdays[i] for i in out['allowed_days']]}")
+            
+            # Handle lunch time constraints
+            if "after lunch" in prompt.lower():
+                print("Detected: after lunch specification")
+                lunch_end_hour = 13
+                lunch_end_minute = 15
+                out["earliest"] = lunch_end_hour
+                out["start"] = out["start"].replace(hour=lunch_end_hour, minute=lunch_end_minute)
+                print(f"Adjusted start time to after lunch: {out['start']}")
+            
+            return out
+            
+        except StopIteration:
+            print(f"Warning: Could not parse weekday names: {day1}, {day2}")
 
     # Handle "after DATE" format
     after_date = re.search(r"\bafter\s+(?:the\s+)?(\d+)(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
@@ -234,7 +330,7 @@ def extract_parameters(prompt: str) -> dict:
         print(f"- End date: {out['end'].strftime('%Y-%m-%d %H:%M')} ({out['end'].strftime('%A')})")
         print(f"- Search duration: {days_to_search} days ({days_to_search/7:.1f} weeks)")
         print(f"- Slots needed: {slot_count}")
-        print(f"- Work hours: {out['earliest']:02d}:00 - {out['latest']:02d}:00")
+        print(f"- Work hours: {out['earliest']:02d}:00 - {out['latest']}:00")
         print(f"- Time zone: {LOCAL_TZ}")
         print(f"- Duration per slot: {out['duration']} minutes")
         
@@ -335,7 +431,7 @@ def extract_parameters(prompt: str) -> dict:
                 if end_date.month < start_date.month:
                     # Try next year
                     end_date = end_date.replace(year=end_date.year + 1)
-                print(f"Adjusted to: {start_date.date()} to {end_date.date()}")
+            print(f"Adjusted to: {start_date.date()} to {end_date.date()}")
             
         # Set the start and end times
         out["start"] = start_date.replace(hour=out["earliest"], minute=0, second=0, microsecond=0)
@@ -459,7 +555,7 @@ def extract_parameters(prompt: str) -> dict:
         if out["latest"] <= out["earliest"]:
             out["latest"] = max(out["earliest"] + 1, out["latest"] + 12)
             print(f"Adjusted latest to ensure after earliest: {out['latest']}:00")
-
+    
     print("\nFinal parameters:")
     print(f"Start: {out['start']}")
     print(f"End: {out['end']}")
@@ -467,4 +563,121 @@ def extract_parameters(prompt: str) -> dict:
     print(f"Duration: {out['duration']} minutes")
     print(f"Slots needed: {out['count']}")
     
+    return out
+
+def parse_schedule_request(prompt: str) -> dict | None:
+    """Parse a request to view schedule/events.
+    Returns None if the prompt is not a schedule viewing request.
+    Otherwise returns a dict with start and end dates for fetching events.
+    """
+    now = datetime.now(LOCAL_TZ)
+    today = now.date()
+    
+    # Initialize output
+    out = {
+        "start": None,
+        "end": None,
+        "description": ""  # Human readable description of the time range
+    }
+    
+    # Check if this is a schedule viewing request
+    if not re.search(r"\b(?:show|view|see|get|what(?:'s| is))?\s+(?:the\s+)?(?:schedule|calendar|events?)\b", prompt, re.I):
+        return None
+        
+    # Handle "today"
+    if "today" in prompt.lower():
+        out["start"] = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        out["end"] = now.replace(hour=23, minute=59, second=59)
+        out["description"] = "today's schedule"
+        return out
+        
+    # Handle "tomorrow"
+    if "tomorrow" in prompt.lower():
+        tomorrow = now + timedelta(days=1)
+        out["start"] = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        out["end"] = tomorrow.replace(hour=23, minute=59, second=59)
+        out["description"] = "tomorrow's schedule"
+        return out
+        
+    # Handle specific months
+    month_match = re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    if month_match:
+        month_name = month_match.group(1).lower()
+        months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                 'july', 'august', 'september', 'october', 'november', 'december']
+        month_num = months.index(month_name) + 1
+        
+        # Get the year that puts this month in the future
+        target_year = now.year
+        if month_num < now.month:
+            target_year += 1
+            
+        # Set start to first of month
+        start_date = datetime(target_year, month_num, 1, tzinfo=LOCAL_TZ)
+        
+        # Set end to first of next month
+        if month_num == 12:
+            end_date = datetime(target_year + 1, 1, 1, tzinfo=LOCAL_TZ)
+        else:
+            end_date = datetime(target_year, month_num + 1, 1, tzinfo=LOCAL_TZ)
+            
+        out["start"] = start_date
+        out["end"] = end_date
+        out["description"] = f"schedule for {month_name}"
+        return out
+        
+    # Handle "next week"
+    if re.search(r"\bnext\s+week\b", prompt, re.I):
+        # Find next Monday
+        start = now
+        while start.weekday() != 0:  # 0 is Monday
+            start += timedelta(days=1)
+        out["start"] = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        out["end"] = (start + timedelta(days=7)).replace(hour=23, minute=59, second=59)
+        out["description"] = "schedule for next week"
+        return out
+        
+    # Handle "this week"
+    if re.search(r"\bthis\s+week\b", prompt, re.I):
+        # Find previous Monday
+        start = now
+        while start.weekday() != 0:  # 0 is Monday
+            start -= timedelta(days=1)
+        out["start"] = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        out["end"] = (start + timedelta(days=7)).replace(hour=23, minute=59, second=59)
+        out["description"] = "schedule for this week"
+        return out
+        
+    # Handle specific dates like "June 13th" or "13th of June"
+    specific_date = re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d+)(?:st|nd|rd|th)?\b|\b(\d+)(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)\b", prompt, re.I)
+    
+    if specific_date:
+        # Extract month and day from either format
+        if specific_date.group(1):  # "June 13th" format
+            month_name = specific_date.group(1).lower()
+            day = int(specific_date.group(2))
+        else:  # "13th of June" format
+            month_name = specific_date.group(4).lower()
+            day = int(specific_date.group(3))
+            
+        months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                 'july', 'august', 'september', 'october', 'november', 'december']
+        month_num = months.index(month_name) + 1
+        
+        # Get the year that puts this date in the future
+        target_year = now.year
+        target_date = datetime(target_year, month_num, day, tzinfo=LOCAL_TZ)
+        if target_date < now:
+            target_year += 1
+            target_date = datetime(target_year, month_num, day, tzinfo=LOCAL_TZ)
+            
+        out["start"] = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        out["end"] = target_date.replace(hour=23, minute=59, second=59)
+        out["description"] = f"schedule for {month_name} {day}"
+        return out
+    
+    # Default to today if no specific time range found
+    out["start"] = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    out["end"] = now.replace(hour=23, minute=59, second=59)
+    out["description"] = "today's schedule"
     return out

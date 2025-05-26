@@ -1,0 +1,3 @@
+"""
+Calendar AI backend package
+""" 

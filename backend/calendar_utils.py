@@ -192,29 +192,47 @@ def list_events(service, calendar_id: str, start_dt: datetime, end_dt: datetime)
         e_raw = ev["end"].get("dateTime")   or ev["end"]["date"]
         
         try:
+            # Parse the raw datetime strings and ensure they're timezone aware
             s_dt = datetime.fromisoformat(s_raw)
             e_dt = datetime.fromisoformat(e_raw)
-            print(f"Adding event: {summary} ({_to_local(s_dt).strftime('%H:%M')} → {_to_local(e_dt).strftime('%H:%M')})")
+            
+            # If the times don't have timezone info, assume they're in LOCAL_TZ
+            if s_dt.tzinfo is None:
+                s_dt = s_dt.replace(tzinfo=LOCAL_TZ)
+            if e_dt.tzinfo is None:
+                e_dt = e_dt.replace(tzinfo=LOCAL_TZ)
+            
+            # Convert to local time for display
+            s_local = s_dt.astimezone(LOCAL_TZ)
+            e_local = e_dt.astimezone(LOCAL_TZ)
+            
+            print(f"Adding event: {summary} ({s_local.strftime('%Y-%m-%d %H:%M')} → {e_local.strftime('%H:%M')})")
+            
+            # Store in UTC
             busy.append((_to_utc(s_dt), _to_utc(e_dt)))
-        except Exception:
-            print(f"⚠️  skipped malformed event: {summary} ({s_raw} – {e_raw})")
+        except Exception as e:
+            print(f"⚠️  skipped malformed event: {summary} ({s_raw} – {e_raw}): {str(e)}")
     
     # Sort busy periods by start time
     busy.sort()
     
-    print("\n🗓️ Calendar Events:")
+    print("\n🗓️ Calendar Events (before merging):")
     for ev_start, ev_end in busy:
         start_local = _to_local(ev_start)
         end_local = _to_local(ev_end)
         print(f"- {start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%H:%M')}")
     
-    # Merge any busy periods that are very close together (less than minimum viable gap)
+    # Merge any busy periods that overlap or are very close together
     min_gap = timedelta(minutes=1)  # Minimum gap we consider viable between meetings
     merged = []
     if busy:
         current = busy[0]
         for next_period in busy[1:]:
-            if _to_local(next_period[0]) - _to_local(current[1]) < min_gap:
+            # Convert both periods to local time for comparison
+            current_end_local = _to_local(current[1])
+            next_start_local = _to_local(next_period[0])
+            
+            if next_start_local - current_end_local <= min_gap:
                 # Merge the periods
                 current = (current[0], max(current[1], next_period[1]))
             else:
@@ -223,7 +241,7 @@ def list_events(service, calendar_id: str, start_dt: datetime, end_dt: datetime)
         merged.append(current)
         busy = merged
         
-        print("\nMerged Events (after combining overlaps):")
+        print("\n🗓️ Merged Events (after combining overlaps):")
         for ev_start, ev_end in busy:
             start_local = _to_local(ev_start)
             end_local = _to_local(ev_end)
@@ -260,6 +278,10 @@ def split_window_into_chunks(win_start, win_end, chunk_minutes):
         print(f"  Added chunk: {cur.strftime('%H:%M')} → {(cur + delta).strftime('%H:%M')}")
         # Move to next potential slot start time, with a buffer
         cur += delta + buffer
+        
+        # If we've moved to the next day, reset to the start of the work day
+        if cur.date() > win_start.date():
+            cur = datetime.combine(cur.date(), time(hour=win_start.hour), tzinfo=LOCAL_TZ)
     
     print(f"Found {len(chunks)} chunks in this window")
     return chunks
@@ -288,7 +310,7 @@ def merge_overlapping_meetings(meetings):
     
     return merged
 
-def find_free_slots(busy, start, end, duration_min, earliest, latest):
+def find_free_slots(busy, start, end, duration_min, earliest, latest, allowed_days=None):
     """Return list of (slot_start_utc, slot_end_utc). All day‑logic is done in LOCAL_TZ
     so that times are correctly handled in Stockholm time.
     
@@ -299,6 +321,7 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest):
         duration_min: Minimum duration of slots in minutes
         earliest: Earliest hour of day to consider (in local time, 0-23)
         latest: Latest hour of day to consider (in local time, 0-23)
+        allowed_days: List of allowed weekday indices (0=Monday, 6=Sunday) or None for all weekdays
     """
     print(f"\n🔍 Debug: Finding slots with parameters:")
     print(f"Start (UTC): {start}")
@@ -306,11 +329,21 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest):
     print(f"Duration: {duration_min} minutes")
     print(f"Hours: {earliest}:00 - {latest}:00 (local time)")
     print(f"Total search window: {(end - start).days} days")
+    if allowed_days is not None:
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        print(f"Allowed days: {[days[i] for i in allowed_days]}")
     
     # Convert everything to local time for processing
     start_loc = _to_local(start)
     end_loc = _to_local(end)
     busy_loc = [(_to_local(s), _to_local(e)) for s, e in busy]
+    
+    # Sort busy times
+    busy_loc.sort()
+    
+    # Ensure start and end times respect the hour constraints
+    start_loc = start_loc.replace(hour=earliest, minute=0)
+    end_loc = end_loc.replace(hour=latest, minute=0)
     
     print(f"\nSearch window in local time:")
     print(f"Start (local): {start_loc}")
@@ -333,8 +366,17 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest):
         days_checked += 1
         slots_found_today = 0
         
-        # Skip weekends
-        if cur.weekday() >= 5:  # 5 is Saturday, 6 is Sunday
+        # Skip days that aren't in allowed_days
+        if allowed_days is not None and cur.weekday() not in allowed_days:
+            days_skipped += 1
+            print(f"\n⏩ Skipping non-allowed day: {cur.date()} ({cur.strftime('%A')})")
+            # Move to next day
+            cur += timedelta(days=1)
+            cur = datetime.combine(cur.date(), time(hour=earliest), tzinfo=LOCAL_TZ)
+            continue
+            
+        # Skip weekends if no allowed_days specified (maintain default behavior)
+        if allowed_days is None and cur.weekday() >= 5:
             days_skipped += 1
             print(f"\n⏩ Skipping weekend day: {cur.date()} ({cur.strftime('%A')})")
             # Move to next day
@@ -342,13 +384,9 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest):
             cur = datetime.combine(cur.date(), time(hour=earliest), tzinfo=LOCAL_TZ)
             continue
             
-        # Set up the day's boundaries in local time
-        day_start = datetime.combine(cur.date(), time(hour=earliest), tzinfo=LOCAL_TZ)
-        day_end = datetime.combine(cur.date(), time(hour=latest), tzinfo=LOCAL_TZ)
-
-        # Don't look before the overall start time or after the overall end time
-        day_start = max(day_start, start_loc)
-        day_end = min(day_end, end_loc)
+        # Set up the day's boundaries in local time - strictly enforce time constraints
+        day_start = datetime.combine(cur.date(), time(hour=earliest, minute=0), tzinfo=LOCAL_TZ)
+        day_end = datetime.combine(cur.date(), time(hour=latest, minute=0), tzinfo=LOCAL_TZ)
         
         print(f"\n📅 Checking {cur.strftime('%A')}, {cur.date()}:")
         print(f"Day window: {day_start.strftime('%H:%M')} - {day_end.strftime('%H:%M')} (local)")
@@ -365,7 +403,7 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest):
                     day_busy.append((clipped_start, clipped_end))
         
         # Merge overlapping meetings
-        day_busy = merge_overlapping_meetings(day_busy)
+        day_busy = merge_overlapping_meetings(sorted(day_busy))
         
         if day_busy:
             print(f"Found {len(day_busy)} meetings/blocks for this day:")
@@ -374,45 +412,29 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest):
         else:
             print("No meetings/blocks for this day! 🎉")
 
-        # Start from the beginning of the work day
-        pointer = day_start
-
-        # Process each busy block
-        for b_start, b_end in day_busy:
-            # If there's a gap before this meeting that's long enough
-            gap = b_start - pointer
-            gap_minutes = gap.total_seconds() / 60
-            if gap_minutes >= duration_min:
-                # Only consider the gap if it ends before the work day ends
-                gap_end = min(b_start, day_end)
-                if gap_end > pointer:
-                    # For each gap that's long enough, create multiple slots if possible
-                    slot_start = pointer
-                    while slot_start + delta <= gap_end:
-                        slot = (_to_utc(slot_start), _to_utc(slot_start + delta))
-                        print(f"✅ Found slot: {_to_local(slot[0]).strftime('%H:%M')} → {_to_local(slot[1]).strftime('%H:%M')} ({duration_min} min)")
-                        free.append(slot)
-                        slots_found_today += 1
-                        total_slots_found += 1
-                        # Move to next potential slot start time, with a buffer
-                        slot_start += timedelta(minutes=45)  # Add 15-minute buffer between slots
-            pointer = max(pointer, b_end)
-
-        # Check for gap after last meeting to end of work day
-        if pointer < day_end:
-            final_gap = day_end - pointer
-            final_gap_minutes = final_gap.total_seconds() / 60
-            if final_gap_minutes >= duration_min:
-                # Create multiple slots in the end-of-day gap if possible
-                slot_start = pointer
-                while slot_start + delta <= day_end:
-                    slot = (_to_utc(slot_start), _to_utc(slot_start + delta))
-                    print(f"✅ Found end-of-day slot: {_to_local(slot[0]).strftime('%H:%M')} → {_to_local(slot[1]).strftime('%H:%M')} ({duration_min} min)")
-                    free.append(slot)
-                    slots_found_today += 1
-                    total_slots_found += 1
-                    # Move to next potential slot start time, with a buffer
-                    slot_start += timedelta(minutes=45)  # Add 15-minute buffer between slots
+        # Instead of looking for gaps between meetings, try each possible slot
+        slot_start = day_start
+        while slot_start + delta <= day_end:
+            slot_end = slot_start + delta
+            
+            # Check if this slot overlaps with any busy time
+            is_free = True
+            for busy_start, busy_end in day_busy:
+                # A slot overlaps if it starts before a busy period ends AND ends after a busy period starts
+                if (slot_start < busy_end and slot_end > busy_start):
+                    print(f"❌ Slot {slot_start.strftime('%H:%M')} → {slot_end.strftime('%H:%M')} overlaps with busy time {busy_start.strftime('%H:%M')} → {busy_end.strftime('%H:%M')}")
+                    is_free = False
+                    break
+            
+            if is_free:
+                slot = (_to_utc(slot_start), _to_utc(slot_end))
+                print(f"✅ Found slot: {slot_start.strftime('%H:%M')} → {slot_end.strftime('%H:%M')} ({duration_min} min)")
+                free.append(slot)
+                slots_found_today += 1
+                total_slots_found += 1
+            
+            # Move to next potential slot start time, with a buffer
+            slot_start += timedelta(minutes=45)  # Add 15-minute buffer between slots
 
         if slots_found_today > 0:
             days_with_slots += 1

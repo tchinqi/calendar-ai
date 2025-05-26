@@ -9,6 +9,7 @@ from config         import SCOPES, DEFAULT_SLOT_MINUTES
 from nlp_utils      import extract_parameters
 from calendar_utils import get_service, list_events, find_free_slots
 from config         import THOR_CAL_ID
+from view_schedule  import get_schedule
 
 import os
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"   # dev-only, remove in prod
@@ -90,7 +91,8 @@ def free_slots():
     busy = list_events(service, THOR_CAL_ID, start, end)
     slots = find_free_slots(
         busy, start, end,
-        duration, params["earliest"], params["latest"]
+        duration, params["earliest"], params["latest"],
+        allowed_days=params.get("allowed_days")
     )
     
     print(f"\n📊 Found {len(slots)} initial free windows")
@@ -154,6 +156,41 @@ def free_slots():
             formatted_slots.append(slot_text)
         
         response_text = "\n\n".join(formatted_slots)
+    
+    # Return plain text response
+    response = make_response(response_text)
+    response.headers["Content-Type"] = "text/plain; charset=utf-8"
+    return response
+
+@app.route("/view-schedule", methods=["POST"])
+def view_schedule():
+    creds = load_creds()
+    if not creds or not creds.valid:
+        return jsonify({"auth": False}), 401
+
+    prompt = request.json.get("prompt", "")
+    result = get_schedule(prompt)
+    
+    if "error" in result:
+        return jsonify(result), 400
+        
+    # Format response as clean text
+    formatted_events = []
+    for event in result["events"]:
+        if event["is_all_day"]:
+            event_text = f"{event['start'][:10]} (All day) - {event['summary']}"
+        else:
+            if event["start"][:10] == event["end"][:10]:  # Same day
+                event_text = f"{event['start']} - {event['end']} - {event['summary']}"
+            else:  # Multi-day event
+                event_text = f"{event['start']} → {event['end']} - {event['summary']}"
+        formatted_events.append(event_text)
+    
+    response_text = f"📅 {result['description'].capitalize()}\n\n"
+    if not formatted_events:
+        response_text += "No events found."
+    else:
+        response_text += "\n".join(formatted_events)
     
     # Return plain text response
     response = make_response(response_text)
