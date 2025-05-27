@@ -537,3 +537,57 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest, allowed_da
         print(f"- {start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%H:%M')} ({duration:.0f} min)")
 
     return filtered_free
+
+def create_event(service, calendar_id: str, summary: str, start_dt: datetime, end_dt: datetime, description: str = None, attendees: list = None) -> dict:
+    """Create a new calendar event.
+    
+    Args:
+        service: Google Calendar API service instance
+        calendar_id: ID of the calendar to create event in
+        summary: Event title/summary
+        start_dt: Start datetime (timezone-aware)
+        end_dt: End datetime (timezone-aware)
+        description: Optional event description
+        attendees: Optional list of attendee email addresses
+        
+    Returns:
+        Created event object from Google Calendar API
+    """
+    event = {
+        'summary': summary,
+        'start': {
+            'dateTime': _rfc3339(start_dt),
+            'timeZone': str(LOCAL_TZ)
+        },
+        'end': {
+            'dateTime': _rfc3339(end_dt),
+            'timeZone': str(LOCAL_TZ)
+        }
+    }
+    
+    if description:
+        event['description'] = description
+        
+    if attendees:
+        event['attendees'] = [{'email': email} for email in attendees]
+        # Set default to send emails to attendees
+        event['guestsCanModify'] = True
+        event['guestsCanSeeOtherGuests'] = True
+        
+    try:
+        created_event = service.events().insert(
+            calendarId=calendar_id,
+            body=event,
+            sendUpdates='all'  # Send emails to attendees
+        ).execute()
+        
+        print(f"✅ Created event: {summary}")
+        print(f"Start: {_to_local(start_dt).strftime('%Y-%m-%d %H:%M')}")
+        print(f"End: {_to_local(end_dt).strftime('%Y-%m-%d %H:%M')}")
+        if attendees:
+            print(f"Attendees: {', '.join(attendees)}")
+        
+        return created_event
+    except Exception as e:
+        print(f"❌ Failed to create event: {str(e)}")
+        raise

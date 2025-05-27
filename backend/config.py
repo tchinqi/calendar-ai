@@ -1,5 +1,8 @@
 # Google OAuth settings & sane defaults
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events"
+]
 
 WORKDAY_START = 9   # 09:00 local
 WORKDAY_END   = 18  # 18:00 local

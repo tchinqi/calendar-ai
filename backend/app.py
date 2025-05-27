@@ -7,7 +7,7 @@ from calendar_utils import split_window_into_chunks, _to_local, _to_utc
 
 from config         import SCOPES, DEFAULT_SLOT_MINUTES
 from nlp_utils      import extract_parameters
-from calendar_utils import get_service, list_events, find_free_slots
+from calendar_utils import get_service, list_events, find_free_slots, create_event
 from config         import THOR_CAL_ID
 from view_schedule  import get_schedule
 
@@ -173,7 +173,7 @@ def free_slots():
             slot_text = (
                 f"Slot {i}\n"
                 f"{s.strftime('%Y-%m-%d')}\n"
-                f"{s.strftime('%A')} | {s.strftime('%H:%M')}-{e.strftime('%H:%M')} CET | "
+                f"{s.strftime('%A')} | {s.strftime('%H:%M')}-{e.strftime('%H:%M')} | "
                 f"{s_utc.strftime('%H:%M')}-{e_utc.strftime('%H:%M')} UTC"
             )
             formatted_slots.append(slot_text)
@@ -219,6 +219,57 @@ def view_schedule():
     response = make_response(response_text)
     response.headers["Content-Type"] = "text/plain; charset=utf-8"
     return response
+
+@app.route("/create-event", methods=["POST"])
+def create_calendar_event():
+    creds = load_creds()
+    if not creds or not creds.valid:
+        return jsonify({"auth": False}), 401
+
+    try:
+        data = request.json
+        prompt = data.get("prompt", "")
+        attendees = data.get("attendees", [])
+        
+        # Extract event details from the prompt
+        # Format: "Create event [title] from [start] to [end]"
+        import re
+        match = re.match(r"(?i)create\s+event\s+(.+?)\s+from\s+(.+?)\s+to\s+(.+)$", prompt)
+        if not match:
+            return jsonify({
+                "error": "Could not understand event creation request. Please use format: 'Create event [title] from [start] to [end]'"
+            }), 400
+            
+        title = match.group(1)
+        start_str = match.group(2)
+        end_str = match.group(3)
+        
+        # Parse the datetime strings
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        # Parse datetime strings in local timezone
+        local_tz = ZoneInfo("Europe/Stockholm")
+        start_dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M").replace(tzinfo=local_tz)
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d %H:%M").replace(tzinfo=local_tz)
+        
+        # Create the event
+        service = get_service(creds)
+        event = create_event(service, THOR_CAL_ID, title, start_dt, end_dt, attendees=attendees)
+        
+        return jsonify({
+            "success": True,
+            "event": {
+                "id": event["id"],
+                "title": event["summary"],
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
+                "attendees": attendees
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 # ---------- dev helpers ----------
 @app.route("/<path:path>")
