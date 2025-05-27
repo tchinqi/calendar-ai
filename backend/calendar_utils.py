@@ -11,12 +11,55 @@ LOCAL_TZ = ZoneInfo("Europe/Stockholm")
 def parse_date_range(date_phrase: str) -> Tuple[datetime, datetime]:
     """
     Parse natural language date expressions and return start and end datetimes.
-    Examples: 'next week', 'tomorrow', 'next monday', 'in three weeks'
+    Examples: 'next week', 'tomorrow', 'next monday', 'in three weeks', 'last week of july', 'end of july'
     
     Returns:
         Tuple of (start_datetime, end_datetime) in the local timezone
     """
     print(f"\nDebug: Parsing date phrase: {date_phrase}")
+    
+    date_phrase_lower = date_phrase.lower()
+    
+    # Special handling for "last week of", "end of", or just "end" month phrases
+    if any(phrase in date_phrase_lower for phrase in ["last week of", "end of", " end "]):
+        # Extract month name if present
+        words = date_phrase_lower.split()
+        month_name = None
+        for word in words:
+            parsed_date = dateparser.parse(word)
+            if parsed_date and parsed_date.month != datetime.now(LOCAL_TZ).month:
+                month_name = word
+                break
+        
+        if month_name:
+            # Parse the first day of the mentioned month
+            base_date = dateparser.parse(
+                f"1 {month_name}",
+                settings={
+                    'TIMEZONE': str(LOCAL_TZ),
+                    'RETURN_AS_TIMEZONE_AWARE': True,
+                    'RELATIVE_BASE': datetime.now(LOCAL_TZ)
+                }
+            )
+            
+            if base_date:
+                # Move to the next month and subtract one week
+                if base_date.month == 12:
+                    next_month = base_date.replace(year=base_date.year + 1, month=1)
+                else:
+                    next_month = base_date.replace(month=base_date.month + 1)
+                
+                last_week_start = next_month - timedelta(days=7)
+                
+                # Adjust to start of week (Monday)
+                while last_week_start.weekday() != 0:
+                    last_week_start -= timedelta(days=1)
+                
+                start_date = last_week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = (start_date + timedelta(days=7)).replace(hour=23, minute=59, second=59, microsecond=999999)
+                
+                print(f"Debug: Returning last week of month range: {start_date} -> {end_date}")
+                return (start_date, end_date)
     
     # Parse the base date from the phrase
     base_date = dateparser.parse(
@@ -34,12 +77,12 @@ def parse_date_range(date_phrase: str) -> Tuple[datetime, datetime]:
         raise ValueError(f"Could not parse date from phrase: {date_phrase}")
     
     # For "week" related phrases
-    if 'week' in date_phrase.lower():
+    if 'week' in date_phrase_lower:
         print("Debug: Detected week-related phrase")
         
         # For "in X weeks" or "X weeks from now", add weeks but don't adjust to start of week
-        if 'from now' in date_phrase.lower() or 'in' in date_phrase.lower():
-            words = date_phrase.lower().split()
+        if 'from now' in date_phrase_lower or 'in' in date_phrase_lower:
+            words = date_phrase_lower.split()
             try:
                 # Look for number words and convert them
                 number_words = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5}
@@ -143,7 +186,12 @@ def list_events(service, calendar_id: str, start_dt: datetime, end_dt: datetime)
         "cannes",
         "event",
         "vacation",
-        "out of office"
+        "out of office",
+        "midsummer eve",  # Swedish holiday
+        "midsummer",      # Include variations
+        "midsommar",      # Swedish spelling
+        "holiday",        # Generic holiday
+        "helgdag"         # Swedish for holiday
     }
 
     busy: list[tuple[datetime, datetime]] = []
@@ -279,6 +327,30 @@ def merge_overlapping_meetings(meetings):
     
     return merged
 
+def is_swedish_holiday(date: datetime) -> bool:
+    """Check if a given date is a Swedish holiday."""
+    # Convert to local time and get month/day
+    local_date = _to_local(date)
+    month = local_date.month
+    day = local_date.day
+    
+    # Define Swedish holidays
+    swedish_holidays = {
+        # Fixed dates
+        (6, 20): "Midsummer Eve",  # June 20
+        (6, 21): "Midsummer Day",  # June 21
+        (12, 24): "Christmas Eve",
+        (12, 25): "Christmas Day",
+        (12, 26): "Boxing Day",
+        (12, 31): "New Year's Eve",
+        (1, 1): "New Year's Day",
+        (1, 6): "Epiphany",
+        (5, 1): "Labour Day",
+        (6, 6): "National Day"
+    }
+    
+    return (month, day) in swedish_holidays
+
 def find_free_slots(busy, start, end, duration_min, earliest, latest, allowed_days=None):
     """Return list of (slot_start_utc, slot_end_utc). All day‑logic is done in LOCAL_TZ
     so that times are correctly handled in Stockholm time.
@@ -348,6 +420,15 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest, allowed_da
         if allowed_days is None and cur.weekday() >= 5:
             days_skipped += 1
             print(f"\n⏩ Skipping weekend day: {cur.date()} ({cur.strftime('%A')})")
+            # Move to next day
+            cur += timedelta(days=1)
+            cur = datetime.combine(cur.date(), time(hour=earliest), tzinfo=LOCAL_TZ)
+            continue
+            
+        # Skip Swedish holidays
+        if is_swedish_holiday(cur):
+            days_skipped += 1
+            print(f"\n⏩ Skipping Swedish holiday: {cur.date()}")
             # Move to next day
             cur += timedelta(days=1)
             cur = datetime.combine(cur.date(), time(hour=earliest), tzinfo=LOCAL_TZ)
@@ -444,18 +525,15 @@ def find_free_slots(busy, start, end, duration_min, earliest, latest, allowed_da
     print(f"- Total slots found: {len(filtered_free)}")
     print(f"- Slots filtered out: {slots_filtered}")
     
-    if filtered_free:
-        print(f"\n✨ Available Slots:")
-        for slot_start, slot_end in filtered_free:
-            start_local = _to_local(slot_start)
-            end_local = _to_local(slot_end)
-            duration = (end_local - start_local).total_seconds() / 60
-            print(f"- {start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%H:%M')} ({duration:.0f} min)")
-    else:
-        print("\n❌ No available slots found that match all criteria:")
-        print("- Must be on a weekday")
-        print(f"- Must be between {earliest:02d}:00 and {latest:02d}:00")
-        print(f"- Must have at least {duration_min} minutes available")
-        print("- Must not conflict with any calendar events")
+    if not filtered_free:
+        print("\n❌ No slots found matching your criteria. Try different dates or times.")
+        return []
+
+    print(f"\n✨ Available Slots:")
+    for slot_start, slot_end in filtered_free:
+        start_local = _to_local(slot_start)
+        end_local = _to_local(slot_end)
+        duration = (end_local - start_local).total_seconds() / 60
+        print(f"- {start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%H:%M')} ({duration:.0f} min)")
 
     return filtered_free
